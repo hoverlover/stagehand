@@ -84,7 +84,8 @@ describe("Cache LLM client selection", () => {
 
     expect(result?.success).toBe(true);
     expect(handler.takeDeterministicAction).toHaveBeenCalledTimes(1);
-    const call = vi.mocked(handler.takeDeterministicAction).mock.calls[0];
+    const mockFn = handler.takeDeterministicAction as ReturnType<typeof vi.fn>;
+    const call = mockFn.mock.calls[0];
     expect(call?.[3]).toBe(overrideClient);
   });
 
@@ -129,7 +130,9 @@ describe("Cache LLM client selection", () => {
       }),
     } as unknown as ActHandler;
 
-    const fakePage = {} as Page;
+    const fakePage = {
+      url: vi.fn().mockReturnValue("https://example.com"),
+    } as unknown as Page;
     const ctx = {
       awaitActivePage: vi.fn().mockResolvedValue(fakePage),
     } as unknown as V3Context;
@@ -161,7 +164,8 @@ describe("Cache LLM client selection", () => {
 
     expect(result?.success).toBe(true);
     expect(handler.takeDeterministicAction).toHaveBeenCalledTimes(1);
-    const call = vi.mocked(handler.takeDeterministicAction).mock.calls[0];
+    const mockFn = handler.takeDeterministicAction as ReturnType<typeof vi.fn>;
+    const call = mockFn.mock.calls[0];
     expect(call?.[3]).toBe(overrideClient);
   });
 
