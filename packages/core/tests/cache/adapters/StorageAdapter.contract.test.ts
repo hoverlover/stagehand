@@ -358,3 +358,122 @@ describe("FilesystemAdapter-specific features", () => {
     expect((result.error as Error).message).toContain("path traversal");
   });
 });
+
+// Test for Windows drive root path handling
+// This tests the fix for: https://github.com/browserbase/stagehand/pull/1566
+// The bug was that Windows drive roots like "C:\" were not correctly detected as roots,
+// causing the path traversal check to reject all valid keys.
+describe("FilesystemAdapter Windows drive root handling", () => {
+  afterEach(() => {
+    vi.doUnmock("path");
+    vi.resetModules();
+  });
+
+  it("should correctly identify filesystem root on Unix", () => {
+    // path.parse("/").root === "/" should be true
+    const parsed = path.parse("/");
+    expect(parsed.root).toBe("/");
+  });
+
+  it("should correctly handle root path prefix construction", () => {
+    // Test the logic that should be in FilesystemAdapter
+    // For a root dir, prefix should be the root itself, not root + separator
+    const testCases = [
+      { dir: "/", sep: "/", expectedIsRoot: true },
+      { dir: "/home/user", sep: "/", expectedIsRoot: false },
+    ];
+
+    for (const tc of testCases) {
+      const parsed = path.parse(tc.dir);
+      const isRoot = parsed.root === tc.dir;
+      expect(isRoot).toBe(tc.expectedIsRoot);
+    }
+  });
+
+  it("should accept valid keys when cacheDir is Windows drive root", async () => {
+    // This test verifies the fix for the Windows drive root bug by actually
+    // creating a FilesystemAdapter and exercising its resolvePath logic.
+
+    // Mock path module to simulate Windows behavior
+    vi.doMock("path", async () => {
+      const actualPath = await vi.importActual<typeof import("path")>("path");
+      return {
+        ...actualPath,
+        sep: "\\",
+        resolve: (...args: string[]) => {
+          // Simulate Windows path.resolve for drive root
+          if (args.length === 2 && args[0] === "C:\\" && args[1] === "cache.json") {
+            return "C:\\cache.json";
+          }
+          if (args.length === 1 && args[0] === "C:\\") {
+            return "C:\\";
+          }
+          return actualPath.resolve(...args);
+        },
+        parse: (p: string) => {
+          // Simulate Windows path.parse
+          if (p === "C:\\") {
+            return { root: "C:\\", dir: "C:\\", base: "", name: "", ext: "" };
+          }
+          if (p === "C:\\cache.json") {
+            return { root: "C:\\", dir: "C:\\", base: "cache.json", name: "cache", ext: ".json" };
+          }
+          return actualPath.parse(p);
+        },
+        dirname: (p: string) => {
+          if (p === "C:\\cache.json") {
+            return "C:\\";
+          }
+          return actualPath.dirname(p);
+        },
+      };
+    });
+
+    // Mock fs module so we can create an adapter without real filesystem operations
+    vi.doMock("fs", async () => {
+      const actualFs = await vi.importActual<typeof import("fs")>("fs");
+      const mockModule = {
+        ...actualFs,
+        mkdirSync: vi.fn(), // Allow create() to succeed
+        promises: {
+          ...actualFs.promises,
+          readFile: vi.fn().mockResolvedValue('{"test": "data"}'),
+          writeFile: vi.fn().mockResolvedValue(undefined),
+          mkdir: vi.fn().mockResolvedValue(undefined),
+        },
+      };
+      return {
+        ...mockModule,
+        default: mockModule, // Ensure default export for ESM compatibility
+      };
+    });
+
+    // Clear module cache to ensure fresh imports with mocks
+    vi.resetModules();
+
+    // Re-import to get the version using mocked modules
+    const { FilesystemAdapter: WindowsFilesystemAdapter } = await import(
+      "../../../lib/v3/cache/adapters/FilesystemAdapter"
+    );
+
+    // Create adapter with Windows drive root as cache directory
+    const adapter = WindowsFilesystemAdapter.create("C:\\");
+    expect(adapter).not.toBeNull();
+
+    // The key test: if the fix is NOT applied, readJson would fail with "path traversal detected"
+    // because:
+    //   - old code: prefix = "C:\\" + "\\" = "C:\\\\"
+    //   - resolved = "C:\\cache.json"
+    //   - "C:\\cache.json".startsWith("C:\\\\") === false -> throws error
+    //
+    // With the fix:
+    //   - isRoot = path.parse("C:\\").root === "C:\\" -> true
+    //   - prefix = "C:\\" (no extra separator added)
+    //   - "C:\\cache.json".startsWith("C:\\") === true -> valid
+
+    // This call exercises resolvePath and should NOT throw path traversal error
+    const result = await adapter!.readJson("cache.json");
+    expect(result.error).toBeUndefined();
+    expect(result.value).toEqual({ test: "data" });
+  });
+});
